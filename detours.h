@@ -138,12 +138,7 @@
 #  define MOLOGIE_DETOURS_MEMORY_REPROTECT(ADDRESS, SIZE, OLDPROT) MOLOGIE_DETOURS_MEMORY_POSIX_PAGEPROTECT((ADDRESS), (SIZE), PROT_READ | PROT_EXEC)
 #  define MOLOGIE_DETOURS_MEMORY_WINDOWS_INIT(NAME)
 #endif
-
-#if defined(MOLOGIE_DETOURS_HDE_32)
 #define MOLOGIE_DETOURS_DETOUR_SIZE (1 + sizeof(int32_t))
-#elif defined(MOLOGIE_DETOURS_HDE_64)
-#define MOLOGIE_DETOURS_DETOUR_SIZE (2 + sizeof(void*) + 2 + 1)
-#endif
 
 /**
  * @namespace	MologieDetours
@@ -184,22 +179,14 @@ namespace MologieDetours
 	 *
 	 * @brief	Defines an alias representing type of an address.
 	 */
-#if defined(MOLOGIE_DETOURS_HDE_32)
-	typedef uint32_t address_type;
-#elif defined(MOLOGIE_DETOURS_HDE_64)
-	typedef uint64_t address_type;
-#endif
+	typedef uintptr_t address_type;
 
 	/**
-	 * @typedef	address_pointer_type
-	 *
-	 * @brief	Defines an alias representing type of a pointerto an address.
-	 */
-#if defined(MOLOGIE_DETOURS_HDE_32)
-	typedef uint32_t* address_pointer_type;
-#elif defined(MOLOGIE_DETOURS_HDE_64)
-	typedef uint64_t* address_pointer_type;
-#endif
+	* @typedef	offset_type
+	*
+	* @brief	Defines an alias representing type of an address offset.
+	*/
+	typedef intptr_t offset_type;
 
 	/**
 	 * @class	DetourException
@@ -410,11 +397,8 @@ namespace MologieDetours
 			catch(DetourException &)
 			{
 				// Reverting failed, redirect trampoline to original code instead
-				*reinterpret_cast<address_pointer_type>(trampoline_ + 1) = backupOriginalCode_ - trampoline_ - MOLOGIE_DETOURS_DETOUR_SIZE;
+				*reinterpret_cast<int32_t*>(trampoline_ + 1) = static_cast<int32_t>(backupOriginalCode_ - trampoline_ - MOLOGIE_DETOURS_DETOUR_SIZE);
 			}
-
-			// Free the detour code backup used by Revert()
-			delete[] backupDetour_;
 		}
 
 		/**
@@ -474,10 +458,28 @@ namespace MologieDetours
 		 */
 		function_type GetOriginalFunction()
 		{
-			return reinterpret_cast<function_type>(backupOriginalCode_);
+			return *reinterpret_cast<function_type*>(&backupOriginalCode_);
 		}
 
 	private:
+		// This function will hold a backup of the original code
+		static int BackupOriginalCode( int a, int b, int c, int d )
+		{
+			return a * d + b / c * a / b - c * d;
+		}
+
+		// This function will hold a backup of the detour
+		static int BackupDetour( int a, int b, int c, int d )
+		{
+			return a * b + d / c;
+		}
+
+		// This function will hold the trampoline
+		static int Trampoline( int a, int b, int c, int d )
+		{
+			return a * b + c / d;
+		}
+
 		/**
 		 * @fn	virtual void Detour::CreateDetour()
 		 *
@@ -536,32 +538,7 @@ namespace MologieDetours
 			}
 
 			// Backup the original code
-			backupOriginalCode_ = new uint8_t[instructionCount_ + MOLOGIE_DETOURS_DETOUR_SIZE];
-			memcpy(backupOriginalCode_, targetFunction, instructionCount_);
-
-			// Fix relative jmps to point to the correct location
-			RelocateCode(targetFunction, backupOriginalCode_, instructionCount_);
-
-			// Jump back to original function after executing replaced code
-			uint8_t* jmpBack = backupOriginalCode_ + instructionCount_;
-#if defined(MOLOGIE_DETOURS_HDE_32)
-			jmpBack[0] = 0xE9;
-			*reinterpret_cast<address_pointer_type>(jmpBack + 1) = reinterpret_cast<address_type>(pSource_) + instructionCount_ - reinterpret_cast<address_type>(jmpBack) - MOLOGIE_DETOURS_DETOUR_SIZE;
-#elif defined(MOLOGIE_DETOURS_HDE_64)
-			/* 0x49 is the 'movabs' opcode. */
-			jmpBack[0] = 0x49;
-			/* 0xBB is the %r11 register. */
-			jmpBack[1] = 0xBB;
-
-			/* Write the destination address. */
-			*reinterpret_cast<address_pointer_type>(jmpBack + 2) = reinterpret_cast<address_type>(pSource_) + instructionCount_;
-
-			/* 0x41 and 0xFF are the encoded unconditional jump instruction opcode. */
-			jmpBack[10] = 0x41;
-			jmpBack[11] = 0xFF;
-			/* 0xE3 is the %r11 register. */
-			jmpBack[12] = 0xE3;
-#endif
+			backupOriginalCode_ = reinterpret_cast<uint8_t*>(&BackupOriginalCode);
 
 			// Make backupOriginalCode_ executable
 			if(!MOLOGIE_DETOURS_MEMORY_UNPROTECT(backupOriginalCode_, instructionCount_ + MOLOGIE_DETOURS_DETOUR_SIZE, dwProt))
@@ -569,31 +546,38 @@ namespace MologieDetours
 				throw DetourPageProtectionException("Failed to make copy of original code executable", backupOriginalCode_);
 			}
 
+			memcpy(backupOriginalCode_, targetFunction, instructionCount_);
+
+			// Fix relative jmps to point to the correct location
+			RelocateCode(targetFunction, backupOriginalCode_, instructionCount_);
+
+			// Jump back to original function after executing replaced code
+			uint8_t* jmpBack = backupOriginalCode_ + instructionCount_;
+			jmpBack[0] = 0xE9;
+			*reinterpret_cast<int32_t*>(jmpBack + 1) = static_cast<int32_t>(reinterpret_cast<offset_type>(pSource_) + instructionCount_ - reinterpret_cast<offset_type>(jmpBack) - MOLOGIE_DETOURS_DETOUR_SIZE);
+
+			// Reprotect backupOriginalCode_ function
+			if(!MOLOGIE_DETOURS_MEMORY_REPROTECT(backupOriginalCode_, instructionCount_ + MOLOGIE_DETOURS_DETOUR_SIZE, dwProt))
+			{
+				throw DetourPageProtectionException("Failed to make copy of original code executable", backupOriginalCode_);
+			}
+
 			// Create a new trampoline which points at the detour
-			trampoline_ = new uint8_t[MOLOGIE_DETOURS_DETOUR_SIZE];
-#if defined(MOLOGIE_DETOURS_HDE_32)
-			trampoline_[0] = 0xE9;
-			*reinterpret_cast<address_pointer_type>(trampoline_ + 1) = reinterpret_cast<address_type>(pDetour_) - reinterpret_cast<address_type>(trampoline_) - MOLOGIE_DETOURS_DETOUR_SIZE;
-#elif defined(MOLOGIE_DETOURS_HDE_64)
-			/* 0x49 is the 'movabs' opcode. */
-			trampoline_[0] = 0x49;
-			/* 0xBB is the %r11 register. */
-			trampoline_[1] = 0xBB;
-
-			/* Write the destination address. */
-			*reinterpret_cast<address_pointer_type>(trampoline_ + 2) = reinterpret_cast<address_type>(pDetour_);
-
-			/* 0x41 and 0xFF are the encoded unconditional jump instruction opcode. */
-			trampoline_[10] = 0x41;
-			trampoline_[11] = 0xFF;
-			/* 0xE3 is the %r11 register. */
-			trampoline_[12] = 0xE3;
-#endif
+			trampoline_ = reinterpret_cast<uint8_t*>(&Trampoline);
 
 			// Make trampoline_ executable
 			if(!MOLOGIE_DETOURS_MEMORY_UNPROTECT(trampoline_, MOLOGIE_DETOURS_DETOUR_SIZE, dwProt))
 			{
 				throw DetourPageProtectionException("Failed to make trampoline executable", trampoline_);
+			}
+
+			trampoline_[0] = 0xE9;
+			*reinterpret_cast<int32_t*>(trampoline_ + 1) = static_cast<int32_t>(reinterpret_cast<offset_type>(pDetour_) - reinterpret_cast<offset_type>(trampoline_) - MOLOGIE_DETOURS_DETOUR_SIZE);
+
+			// Reprotect trampoline_ function
+			if(!MOLOGIE_DETOURS_MEMORY_REPROTECT(trampoline_, MOLOGIE_DETOURS_DETOUR_SIZE, dwProt))
+			{
+				throw DetourPageProtectionException("Failed to make copy of original code executable", backupOriginalCode_);
 			}
 
 			// Unprotect original function
@@ -603,30 +587,27 @@ namespace MologieDetours
 			}
 
 			// Redirect original function to trampoline
-#if defined(MOLOGIE_DETOURS_HDE_32)
 			targetFunction[0] = 0xE9;
-			*reinterpret_cast<address_pointer_type>(targetFunction + 1) = reinterpret_cast<address_type>(trampoline_) - reinterpret_cast<address_type>(targetFunction) - MOLOGIE_DETOURS_DETOUR_SIZE;
-#elif defined(MOLOGIE_DETOURS_HDE_64)
-			/* 0x49 is the 'movabs' opcode. */
-			targetFunction[0] = 0x49;
-			/* 0xBB is the %r11 register. */
-			targetFunction[1] = 0xBB;
-
-			/* Write the destination address. */
-			*reinterpret_cast<address_pointer_type>(targetFunction + 2) = reinterpret_cast<address_type>(trampoline_);
-
-			/* 0x41 and 0xFF are the encoded unconditional jump instruction opcode. */
-			targetFunction[10] = 0x41;
-			targetFunction[11] = 0xFF;
-			/* 0xE3 is the %r11 register. */
-			targetFunction[12] = 0xE3;
-#endif
-
-			// Create backup of detour
-			backupDetour_ = new uint8_t[MOLOGIE_DETOURS_DETOUR_SIZE];
-			memcpy(backupDetour_, targetFunction, MOLOGIE_DETOURS_DETOUR_SIZE);
+			*reinterpret_cast<int32_t*>(targetFunction + 1) = static_cast<int32_t>(reinterpret_cast<offset_type>(trampoline_) - reinterpret_cast<offset_type>(targetFunction) - MOLOGIE_DETOURS_DETOUR_SIZE);
 
 			// Reprotect original function
+			if(!MOLOGIE_DETOURS_MEMORY_REPROTECT(targetFunction, MOLOGIE_DETOURS_DETOUR_SIZE, dwProt))
+			{
+				throw DetourPageProtectionException("Failed to change page protection of original function", reinterpret_cast<void*>(targetFunction));
+			}
+
+			// Create backup of detour
+			backupDetour_ = reinterpret_cast<uint8_t*>(&BackupDetour);
+
+			// Make backupDetour_ executable
+			if(!MOLOGIE_DETOURS_MEMORY_UNPROTECT(backupDetour_, MOLOGIE_DETOURS_DETOUR_SIZE, dwProt))
+			{
+				throw DetourPageProtectionException("Failed to change page protection of original function", reinterpret_cast<void*>(targetFunction));
+			}
+
+			memcpy(backupDetour_, targetFunction, MOLOGIE_DETOURS_DETOUR_SIZE);
+
+			// Reprotect backupDetour_ function
 			if(!MOLOGIE_DETOURS_MEMORY_REPROTECT(targetFunction, MOLOGIE_DETOURS_DETOUR_SIZE, dwProt))
 			{
 				throw DetourPageProtectionException("Failed to change page protection of original function", reinterpret_cast<void*>(targetFunction));
@@ -678,10 +659,6 @@ namespace MologieDetours
 			{
 				throw DetourPageProtectionException("Failed to change page protection of original function", trampoline_);
 			}
-
-			// Free memory allocated for trampoline and original code
-			delete[] trampoline_;
-			delete[] backupOriginalCode_;
 		}
 
 		/**
@@ -702,7 +679,7 @@ namespace MologieDetours
 		void RelocateCode(uint8_t* baseOld, uint8_t* baseNew, size_t size)
 		{
 			uint8_t* pbCurOp = baseNew;
-			address_type delta = baseOld - baseNew;
+			offset_type delta = baseOld - baseNew;
 
 			while(pbCurOp < baseNew + size)
 			{
