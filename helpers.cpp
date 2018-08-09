@@ -34,7 +34,7 @@
 *************************************************************************/
 
 #include "helpers.hpp"
-#include "../Platform.hpp"
+#include "Platform.hpp"
 
 #if defined SYSTEM_WINDOWS
 

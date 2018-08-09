@@ -45,7 +45,7 @@
 #include <stdint.h>
 #include <cstddef>
 #include "hook.hpp"
-#include "../Platform.hpp"
+#include "Platform.hpp"
 
 namespace Detouring
 {

@@ -376,7 +376,7 @@ bool IsExecutableAddress(void *pAddress)
     mach_vm_address_t address = (mach_vm_address_t)pAddress;
     mach_vm_size_t vmsize = 0;
     vm_region_flavor_t flavor = VM_REGION_BASIC_INFO_64;
-    vm_region_basic_info_data_64_t info = { 0 };
+    vm_region_basic_info_data_64_t info = { 0, 0, 0, 0, 0, 0, 0, 0 };
     mach_msg_type_number_t info_count = VM_REGION_BASIC_INFO_COUNT_64;
     memory_object_name_t object = MACH_PORT_NULL;
 
